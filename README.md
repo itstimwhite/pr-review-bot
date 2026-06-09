@@ -3,29 +3,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Model: Free](https://img.shields.io/badge/model-free-green.svg)](https://openrouter.ai)
 
-AI-powered pull request review bot that incorporates best practices from [Greptile](https://www.greptile.com/), [CodeRabbit](https://coderabbit.ai/), [Anthropic Code Review](https://www.anthropic.com/engineering/multi-agent-research-system), and [PR-Agent](https://github.com/The-PR-Agent/pr-agent).
-
-**Uses free models on OpenRouter — $0 per review.**
+AI-powered pull request review bot. Uses free models on OpenRouter — $0 per review.
 
 ## What It Does
 
 Every time a PR is opened or updated, the bot:
 
 1. **Fetches the PR diff** and changed files via GitHub CLI
-2. **Queries GBrain** (optional) for codebase context on the changed areas
-3. **Builds a research-backed prompt** focused on logic errors, security, cross-file regressions, and convention violations
-4. **Calls a free LLM** (NVIDIA Nemotron 3 Super 120B) via OpenRouter
-5. **Posts the review** as a PR comment with confidence scoring
-
-## Key Design Principles
-
-Based on analyzing 3.4M+ PR reviews:
-
-- **48% of real bugs are logic errors** — the prompt prioritizes logic over style
-- **Cross-file analysis is #1 value** — explicitly checks callers/callees of changed functions
-- **Independence matters** — separate from code generation (never reviews its own code)
-- **Confidence scoring (1-5)** — enables triage, high-confidence PRs merge 3.6x faster
-- **Quality filtering** — skips reviews with no actionable findings (reduces noise)
+2. **Builds a prompt** focused on logic errors, security, cross-file regressions, and convention violations
+3. **Calls a free LLM** (NVIDIA Nemotron 3 Super 120B) via OpenRouter
+4. **Posts the review** as a PR comment with confidence scoring
 
 ## Quick Start
 
@@ -34,7 +21,7 @@ Based on analyzing 3.4M+ PR reviews:
 Add `.github/workflows/pr-review.yml` to your repo:
 
 ```yaml
-name: PR Review
+name: AI Code Review
 on:
   pull_request:
     types: [opened, reopened, ready_for_review]
@@ -49,24 +36,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
-      - uses: itstimwhite/pr-review-bot@v1
-        with:
-          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install requests
+      - env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          curl -sL https://raw.githubusercontent.com/itsTimWhite/pr-review-bot/main/scripts/review.py -o /tmp/review.py
+          python3 /tmp/review.py --repo ${{ github.repository }} --pr ${{ github.event.pull_request.number }}
 ```
 
-### As a Cron Job (Local)
-
-```bash
-pip install pr-review-bot
-export OPENROUTER_API_KEY=sk-or-...
-export GITHUB_TOKEN=ghp_...
-pr-review-bot --repo owner/repo
-```
+Then add an `OPENROUTER_API_KEY` secret to your repo (get one free at [openrouter.ai](https://openrouter.ai)).
 
 ### As a CLI (One-Off)
 
 ```bash
-pr-review-bot --pr-url https://github.com/owner/repo/pull/123
+python3 review.py --repo owner/repo --pr 123
+```
+
+### As a Cron Job
+
+```bash
+# Review next unreviewed PR every 15 minutes
+*/15 * * * * python3 review.py --repo owner/repo
 ```
 
 ## Configuration
@@ -77,18 +69,14 @@ pr-review-bot --pr-url https://github.com/owner/repo/pull/123
 |----------|----------|-------------|
 | `OPENROUTER_API_KEY` | Yes | OpenRouter API key (free tier works) |
 | `GITHUB_TOKEN` | Yes | GitHub token with `pull-requests:write` |
-| `REPO_PATH` | No | Local repo path (default: cwd) |
-| `MODEL` | No | OpenRouter model (default: `nvidia/nemotron-3-super-120b-a12b:free`) |
+| `OPENROUTER_MODEL` | No | Model (default: `nvidia/nemotron-3-super-120b-a12b:free`) |
 | `MAX_DIFF_BYTES` | No | Skip PRs larger than this (default: 500000) |
-| `GBRAIN_ENABLED` | No | Enable GBrain context (default: false) |
 
 ### REVIEW.md — Custom Review Criteria
 
-Create a `REVIEW.md` in your repo root to customize what the bot looks for:
+Create a `REVIEW.md` in your repo root:
 
 ```markdown
-# Review Criteria
-
 Prioritize:
 - Authorization regressions across admin and customer paths
 - Idempotency in webhook handlers
@@ -105,16 +93,13 @@ The bot reads your `AGENTS.md` (if present) to understand project conventions, t
 
 ## Models
 
-Default model is `nvidia/nemotron-3-super-120b-a12b:free` — a 120B parameter model, free on OpenRouter.
-
-Other free options:
-- `nvidia/nemotron-3-super-120b-a12b:free` (120B, best quality)
-- `qwen/qwen3-coder:free` (fast, good for code)
-- `google/gemini-2.5-flash:free` (fast, Google)
-
-Paid options for higher quality:
-- `anthropic/claude-sonnet-4` (best code review quality)
-- `openai/gpt-4o` (good all-rounder)
+| Model | Cost | Notes |
+|-------|------|-------|
+| `nvidia/nemotron-3-super-120b-a12b:free` | Free | 120B params, best quality free model |
+| `qwen/qwen3-coder:free` | Free | Fast, good for code |
+| `google/gemini-2.5-flash:free` | Free | Fast, Google |
+| `anthropic/claude-sonnet-4` | Paid | Best code review quality |
+| `openai/gpt-4o` | Paid | Good all-rounder |
 
 ## Architecture
 
@@ -123,12 +108,10 @@ PR Event (webhook/cron)
   │
   ├── gh pr list → find unreviewed PRs
   ├── gh pr diff → get changes
-  ├── gbrain search → codebase context (optional)
   │
-  ├── Build prompt (research-backed)
+  ├── Build prompt (priority-ordered)
   │   ├── System: conventions, invariants, priority order
-  │   ├── User: PR title, description, files, diff
-  │   └── Context: GBrain results, REVIEW.md, linked issues
+  │   └── User: PR title, description, files, diff
   │
   ├── OpenRouter API → LLM review
   │
@@ -136,14 +119,6 @@ PR Event (webhook/cron)
   │
   └── gh pr comment → post review with confidence score
 ```
-
-## Research Sources
-
-- [Greptile: AI Code Review Best Practices](https://www.greptile.com/blog/ai-code-review) — 3.4M+ PR analysis
-- [Anthropic: Multi-Agent Code Review](https://thenewstack.io/anthropic-launches-a-multi-agent-code-review-tool-for-claude-code/) — March 2026
-- [CodeRabbit Changelog](https://docs.coderabbit.ai/changelog) — feature evolution
-- [PR-Agent](https://github.com/The-PR-Agent/pr-agent) — open source PR review
-- [Augment Code: Open Source AI Code Review Tools](https://www.augmentcode.com/tools/open-source-ai-code-review-tools-worth-trying) — benchmark testing
 
 ## License
 
