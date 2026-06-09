@@ -54,11 +54,33 @@ Then add an `OPENROUTER_API_KEY` secret to your repo (get one free at [openroute
 python3 review.py --repo owner/repo --pr 123
 ```
 
+### As a CLI
+
+```bash
+# Review next unreviewed PR
+python3 scripts/review.py review --repo owner/repo
+
+# Review specific PR
+python3 scripts/review.py review --repo owner/repo --pr 123
+
+# Dry run (print review without posting)
+python3 scripts/review.py review --repo owner/repo --pr 123 --dry-run
+
+# JSON output (for agents/piping)
+python3 scripts/review.py review --repo owner/repo --pr 123 --dry-run --json
+
+# List unreviewed PRs
+python3 scripts/review.py queue --repo owner/repo
+
+# Post an existing review file
+python3 scripts/review.py post --repo owner/repo --pr 123 --file review.md
+```
+
 ### As a Cron Job
 
 ```bash
 # Review next unreviewed PR every 15 minutes
-*/15 * * * * python3 review.py --repo owner/repo
+*/15 * * * * python3 scripts/review.py review --repo owner/repo
 ```
 
 ## Configuration
