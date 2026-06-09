@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """PR Review Bot — AI-powered code review using free models on OpenRouter.
 
-Incorporates best practices from Greptile, CodeRabbit, Anthropic Code Review, and PR-Agent.
-
 Usage:
-    python review.py                          # Review next unreviewed PR
-    python review.py --pr 123                 # Review specific PR
-    python review.py --repo owner/repo --pr 123 --token ghp_xxx
+    pr-review-bot review --repo owner/repo            # Review next unreviewed PR
+    pr-review-bot review --repo owner/repo --pr 123   # Review specific PR
+    pr-review-bot review --dry-run ...                # Review without posting
+    pr-review-bot queue --repo owner/repo             # List unreviewed PRs
+    pr-review-bot post --repo owner/repo --pr 123 --file review.md  # Post existing review
 
 Environment variables:
-    OPENROUTER_API_KEY  — OpenRouter API key (required)
-    GITHUB_TOKEN        — GitHub token with pull-requests:write (required)
-    OPENROUTER_MODEL    — Model to use (default: nvidia/nemotron-3-super-120b-a12b:free)
+    OPENROUTER_API_KEY  — OpenRouter API key (required for review)
+    GITHUB_TOKEN        — GitHub token with pull-requests:write (required for post)
+    OPENROUTER_MODEL    — Model (default: nvidia/nemotron-3-super-120b-a12b:free)
 """
 from __future__ import annotations
 
@@ -220,8 +220,9 @@ def has_actionable_findings(text: str) -> bool:
     return False
 
 
-def review_pr(repo: str, pr_number: int | None, model: str) -> int:
+def review_pr(repo: str, pr_number: int | None, model: str, dry_run: bool = False, json_output: bool = False) -> int:
     token = os.environ.get("GITHUB_TOKEN", "")
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
 
     if pr_number:
         # Review specific PR
@@ -299,8 +300,20 @@ def review_pr(repo: str, pr_number: int | None, model: str) -> int:
         log("Quality filter: no actionable findings, skipping")
         return 0
 
-    # Post review
+    # Post review (or dry-run)
     confidence = extract_confidence(review_text)
+
+    if dry_run:
+        if json_output:
+            print(json.dumps({
+                "pr": pr_number,
+                "confidence": confidence,
+                "review": review_text,
+            }, indent=2))
+        else:
+            print(review_text)
+        return 0
+
     comment = (
         f"## AI Code Review (confidence: {confidence}/5)\n\n"
         f"{review_text}\n\n"
@@ -319,17 +332,78 @@ def review_pr(repo: str, pr_number: int | None, model: str) -> int:
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="PR Review Bot — AI-powered code review")
-    parser.add_argument("--repo", required=True, help="GitHub repo (owner/repo)")
-    parser.add_argument("--pr", type=int, help="PR number (auto-detect if omitted)")
-    parser.add_argument("--model", default=os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL),
-                        help="OpenRouter model")
-    parser.add_argument("--max-diff-bytes", type=int, default=MAX_DIFF_BYTES,
-                        help="Skip PRs with diffs larger than this")
-    args = parser.parse_args()
+def cmd_review(args) -> int:
+    """Review a PR (or find next unreviewed)."""
+    return review_pr(args.repo, args.pr, args.model, dry_run=args.dry_run, json_output=args.json)
 
-    return review_pr(args.repo, args.pr, args.model)
+
+def cmd_queue(args) -> int:
+    """List open PRs that need review."""
+    token = os.environ.get("GITHUB_TOKEN", "")
+    prs = gh_list_prs(args.repo, token)
+    if not prs:
+        print("No open PRs")
+        return 0
+
+    unreviewed = []
+    for p in prs:
+        if p.get("isDraft") or is_dependabot(p):
+            continue
+        unreviewed.append(p)
+
+    if args.json:
+        print(json.dumps(unreviewed, indent=2))
+    else:
+        if not unreviewed:
+            print("All PRs reviewed")
+        else:
+            print(f"Unreviewed PRs in {args.repo}:")
+            for p in unreviewed:
+                print(f"  #{p['number']}: {p['title']}")
+    return 0
+
+
+def cmd_post(args) -> int:
+    """Post an existing review file to a PR."""
+    review_text = Path(args.file).read_text()
+    return 0 if gh_post_comment(args.repo, args.pr, review_text) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="pr-review-bot",
+        description="PR Review Bot — AI-powered code review using free models",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    # review
+    p_review = sub.add_parser("review", help="Review a PR")
+    p_review.add_argument("--repo", required=True, help="GitHub repo (owner/repo)")
+    p_review.add_argument("--pr", type=int, help="PR number (auto-detect if omitted)")
+    p_review.add_argument("--model", default=os.environ.get("OPENROUTER_MODEL", DEFAULT_MODEL))
+    p_review.add_argument("--max-diff-bytes", type=int, default=MAX_DIFF_BYTES)
+    p_review.add_argument("--dry-run", action="store_true", help="Print review without posting")
+    p_review.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # queue
+    p_queue = sub.add_parser("queue", help="List unreviewed PRs")
+    p_queue.add_argument("--repo", required=True, help="GitHub repo (owner/repo)")
+    p_queue.add_argument("--json", action="store_true", help="Output as JSON")
+
+    # post
+    p_post = sub.add_parser("post", help="Post an existing review file")
+    p_post.add_argument("--repo", required=True, help="GitHub repo (owner/repo)")
+    p_post.add_argument("--pr", type=int, required=True, help="PR number")
+    p_post.add_argument("--file", required=True, help="Review file to post")
+
+    args = parser.parse_args()
+    if args.command == "review":
+        return cmd_review(args)
+    elif args.command == "queue":
+        return cmd_queue(args)
+    elif args.command == "post":
+        return cmd_post(args)
+    return 1
 
 
 if __name__ == "__main__":
